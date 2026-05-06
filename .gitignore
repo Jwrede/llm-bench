@@ -1,4 +1,5 @@
 /discover
+/generate
 *.exe
 .env
 data/

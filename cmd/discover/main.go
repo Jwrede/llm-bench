@@ -7,28 +7,22 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-type OpenRouterModel struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	Created       int64           `json:"created"`
-	ContextLength int             `json:"context_length"`
-	Pricing       OpenRouterPrice `json:"pricing"`
+type RankingsResponse struct {
+	Data struct {
+		Models []RankedModel `json:"models"`
+	} `json:"data"`
 }
 
-type OpenRouterPrice struct {
-	Prompt     string `json:"prompt"`
-	Completion string `json:"completion"`
-}
-
-type OpenRouterResponse struct {
-	Data []OpenRouterModel `json:"data"`
+type RankedModel struct {
+	Slug          string `json:"slug"`
+	Name          string `json:"name"`
+	ContextLength int    `json:"context_length"`
 }
 
 type ProviderConfig struct {
@@ -53,32 +47,34 @@ type DefaultsConfig struct {
 	Timeout   string `yaml:"timeout"`
 }
 
-var providers = map[string]struct {
-	configName string
-	apiKeyEnv  string
-	baseURL    string
-}{
-	"openai":    {configName: "openai", apiKeyEnv: "OPENAI_API_KEY", baseURL: ""},
-	"anthropic": {configName: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY", baseURL: ""},
-	"google":    {configName: "google", apiKeyEnv: "GEMINI_API_KEY", baseURL: ""},
-	"deepseek":  {configName: "openai", apiKeyEnv: "DEEPSEEK_API_KEY", baseURL: "https://api.deepseek.com/v1"},
-	"x-ai":     {configName: "openai", apiKeyEnv: "XAI_API_KEY", baseURL: "https://api.x.ai/v1"},
+var targetProviders = map[string]bool{
+	"openai":    true,
+	"anthropic": true,
+	"google":    true,
+	"deepseek":  true,
+	"x-ai":     true,
 }
 
 func main() {
 	outPath := flag.String("o", "probes.yml", "output path for generated probes.yml")
 	maxPerProvider := flag.Int("max", 3, "max models per provider")
-	minContext := flag.Int("min-context", 32768, "minimum context length")
+	openrouter := flag.Bool("openrouter", false, "generate config for probing via OpenRouter instead of direct APIs")
 	flag.Parse()
 
-	models, err := fetchOpenRouterModels()
+	models, err := fetchWeeklyRankings()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error fetching models: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error fetching rankings: %v\n", err)
 		os.Exit(1)
 	}
 
-	filtered := filterFrontierModels(models, *maxPerProvider, *minContext)
-	config := buildProbesConfig(filtered)
+	filtered := filterByProvider(models, *maxPerProvider)
+
+	var config ProbesConfig
+	if *openrouter {
+		config = buildOpenRouterConfig(filtered)
+	} else {
+		config = buildDirectConfig(filtered)
+	}
 
 	data, err := yaml.Marshal(config)
 	if err != nil {
@@ -91,12 +87,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("wrote %s (%d models across %d provider entries)\n", *outPath, countModels(config), len(config.Providers))
+	total := 0
+	for _, models := range filtered {
+		total += len(models)
+	}
+	fmt.Printf("wrote %s (%d models from weekly rankings)\n", *outPath, total)
+	for provider, models := range filtered {
+		for _, m := range models {
+			fmt.Printf("  %s: %s\n", provider, m.Slug)
+		}
+	}
 }
 
-func fetchOpenRouterModels() ([]OpenRouterModel, error) {
+func fetchWeeklyRankings() ([]RankedModel, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get("https://openrouter.ai/api/v1/models")
+	resp, err := client.Get("https://openrouter.ai/api/frontend/models/find?order=top-weekly")
 	if err != nil {
 		return nil, err
 	}
@@ -107,95 +112,62 @@ func fetchOpenRouterModels() ([]OpenRouterModel, error) {
 		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var result OpenRouterResponse
+	var result RankingsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
 
-	return result.Data, nil
+	return result.Data.Models, nil
 }
 
-func filterFrontierModels(models []OpenRouterModel, maxPerProvider, minContext int) map[string][]OpenRouterModel {
-	grouped := make(map[string][]OpenRouterModel)
+func filterByProvider(models []RankedModel, maxPerProvider int) map[string][]RankedModel {
+	grouped := make(map[string][]RankedModel)
 
 	for _, m := range models {
-		provider := extractProvider(m.ID)
-		if provider == "" {
+		provider := extractProvider(m.Slug)
+		if !targetProviders[provider] {
 			continue
 		}
-		if m.ContextLength < minContext {
+		if shouldExclude(m.Slug) {
 			continue
 		}
-		if m.Pricing.Completion == "0" || m.Pricing.Completion == "" {
-			continue
-		}
-		if shouldExclude(m.ID) {
+		if len(grouped[provider]) >= maxPerProvider {
 			continue
 		}
 		grouped[provider] = append(grouped[provider], m)
 	}
 
-	for provider, list := range grouped {
-		sort.Slice(list, func(i, j int) bool {
-			return list[i].Created > list[j].Created
-		})
-		if len(list) > maxPerProvider {
-			list = list[:maxPerProvider]
-		}
-		grouped[provider] = list
-	}
-
 	return grouped
 }
 
-func extractProvider(id string) string {
-	parts := strings.SplitN(id, "/", 2)
+func extractProvider(slug string) string {
+	parts := strings.SplitN(slug, "/", 2)
 	if len(parts) != 2 {
 		return ""
 	}
-	prefix := parts[0]
-	if _, ok := providers[prefix]; ok {
-		return prefix
-	}
-	return ""
+	return parts[0]
 }
 
-func shouldExclude(id string) bool {
-	lower := strings.ToLower(id)
-	excludePatterns := []string{":free", ":extended", "preview", "beta", "image", "multi-agent", "latest"}
-	for _, p := range excludePatterns {
+func shouldExclude(slug string) bool {
+	lower := strings.ToLower(slug)
+	patterns := []string{":free", "preview", "beta", "image", "audio", "search", "gemma"}
+	for _, p := range patterns {
 		if strings.Contains(lower, p) {
 			return true
 		}
 	}
-	if !matchesProviderPattern(id) {
-		return true
-	}
 	return false
 }
 
-func matchesProviderPattern(id string) bool {
-	parts := strings.SplitN(id, "/", 2)
-	if len(parts) != 2 {
-		return false
+func modelName(slug string) string {
+	parts := strings.SplitN(slug, "/", 2)
+	if len(parts) == 2 {
+		return parts[1]
 	}
-	provider, model := parts[0], parts[1]
-	switch provider {
-	case "openai":
-		return strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "o")
-	case "anthropic":
-		return strings.HasPrefix(model, "claude-")
-	case "google":
-		return strings.HasPrefix(model, "gemini-")
-	case "deepseek":
-		return strings.HasPrefix(model, "deepseek-")
-	case "x-ai":
-		return strings.HasPrefix(model, "grok-")
-	}
-	return true
+	return slug
 }
 
-func buildProbesConfig(grouped map[string][]OpenRouterModel) ProbesConfig {
+func buildOpenRouterConfig(grouped map[string][]RankedModel) ProbesConfig {
 	config := ProbesConfig{
 		Defaults: DefaultsConfig{
 			Prompt:    "Hi",
@@ -204,56 +176,67 @@ func buildProbesConfig(grouped map[string][]OpenRouterModel) ProbesConfig {
 		},
 	}
 
-	providerEntries := make(map[string]*ProviderConfig)
+	entry := ProviderConfig{
+		Name:    "openai",
+		APIKey:  "${OPENROUTER_API_KEY}",
+		BaseURL: "https://openrouter.ai/api",
+	}
 
 	providerOrder := []string{"openai", "anthropic", "google", "deepseek", "x-ai"}
-	for _, providerName := range providerOrder {
-		models, ok := grouped[providerName]
+	for _, provider := range providerOrder {
+		models, ok := grouped[provider]
 		if !ok {
 			continue
 		}
-
-		info := providers[providerName]
-		key := fmt.Sprintf("%s_%s", info.configName, info.baseURL)
-
-		entry, exists := providerEntries[key]
-		if !exists {
-			entry = &ProviderConfig{
-				Name:    info.configName,
-				APIKey:  fmt.Sprintf("${%s}", info.apiKeyEnv),
-				BaseURL: info.baseURL,
-			}
-			providerEntries[key] = entry
-			config.Providers = append(config.Providers, *entry)
-		}
-
 		for _, m := range models {
-			modelName := extractModelName(m.ID)
-			entry.Models = append(entry.Models, ModelConfig{Name: modelName})
-		}
-
-		for i := range config.Providers {
-			if config.Providers[i].Name == entry.Name && config.Providers[i].BaseURL == entry.BaseURL {
-				config.Providers[i] = *entry
-			}
+			entry.Models = append(entry.Models, ModelConfig{Name: m.Slug})
 		}
 	}
 
+	config.Providers = append(config.Providers, entry)
 	return config
 }
 
-func extractModelName(openRouterID string) string {
-	parts := strings.SplitN(openRouterID, "/", 2)
-	if len(parts) == 2 {
-		return parts[1]
+func buildDirectConfig(grouped map[string][]RankedModel) ProbesConfig {
+	config := ProbesConfig{
+		Defaults: DefaultsConfig{
+			Prompt:    "Hi",
+			MaxTokens: 20,
+			Timeout:   "30s",
+		},
 	}
-	return openRouterID
-}
 
-func countModels(config ProbesConfig) int {
-	count := 0
-	for _, p := range config.Providers {
-		count += len(p.Models)
+	type providerInfo struct {
+		configName string
+		apiKeyEnv  string
+		baseURL    string
 	}
-	return count
+
+	providerMap := map[string]providerInfo{
+		"openai":    {configName: "openai", apiKeyEnv: "OPENAI_API_KEY"},
+		"anthropic": {configName: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY"},
+		"google":    {configName: "google", apiKeyEnv: "GEMINI_API_KEY"},
+		"deepseek":  {configName: "openai", apiKeyEnv: "DEEPSEEK_API_KEY", baseURL: "https://api.deepseek.com/v1"},
+		"x-ai":     {configName: "openai", apiKeyEnv: "XAI_API_KEY", baseURL: "https://api.x.ai/v1"},
+	}
+
+	providerOrder := []string{"openai", "anthropic", "google", "deepseek", "x-ai"}
+	for _, provider := range providerOrder {
+		models, ok := grouped[provider]
+		if !ok {
+			continue
+		}
+		info := providerMap[provider]
+		entry := ProviderConfig{
+			Name:    info.configName,
+			APIKey:  fmt.Sprintf("${%s}", info.apiKeyEnv),
+			BaseURL: info.baseURL,
+		}
+		for _, m := range models {
+			entry.Models = append(entry.Models, ModelConfig{Name: modelName(m.Slug)})
+		}
+		config.Providers = append(config.Providers, entry)
+	}
+
+	return config
 }
