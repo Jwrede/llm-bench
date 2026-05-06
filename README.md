@@ -113,6 +113,14 @@ llmprobe probe -f json -c /opt/llm-bench/probes.yml | jq -c '.[]' >> data/result
 /opt/llm-bench/generate -data /opt/llm-bench/data -out /opt/llm-bench/site
 ```
 
+## Known limitations
+
+- **OpenRouter proxy overhead**: All probes currently route through OpenRouter
+  rather than hitting provider APIs directly. This adds variable proxy latency,
+  so TTFT and latency numbers are higher than what you would see calling each
+  provider's native endpoint. Throughput (tok/s) is less affected. Switching to
+  direct provider APIs is planned if the project gains traction.
+
 ## Cost
 
 Probing 15 models hourly with "Hi" (1-2 input tokens, 20 output tokens max)
