@@ -91,8 +91,13 @@ func main() {
 func loadRecords(dataDir string) []Record {
 	var records []Record
 
+	resultsFile := filepath.Join(dataDir, "results.jsonl")
+
 	filepath.Walk(dataDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		if path == resultsFile {
 			return nil
 		}
 		f, err := os.Open(path)
