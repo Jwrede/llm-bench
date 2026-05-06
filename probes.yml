@@ -1,0 +1,37 @@
+defaults:
+    prompt: Hi
+    max_tokens: 20
+    timeout: 30s
+providers:
+    - name: openai
+      api_key: ${OPENAI_API_KEY}
+      models:
+        - name: gpt-5.5-pro
+        - name: gpt-5.5
+        - name: gpt-5.4-nano
+    - name: anthropic
+      api_key: ${ANTHROPIC_API_KEY}
+      models:
+        - name: claude-opus-4.7
+        - name: claude-opus-4.6-fast
+        - name: claude-sonnet-4.6
+    - name: google
+      api_key: ${GEMINI_API_KEY}
+      models:
+        - name: gemini-2.5-flash-lite
+        - name: gemini-2.5-flash
+        - name: gemini-2.5-pro
+    - name: openai
+      api_key: ${DEEPSEEK_API_KEY}
+      base_url: https://api.deepseek.com/v1
+      models:
+        - name: deepseek-v4-pro
+        - name: deepseek-v4-flash
+        - name: deepseek-v3.2-speciale
+    - name: openai
+      api_key: ${XAI_API_KEY}
+      base_url: https://api.x.ai/v1
+      models:
+        - name: grok-4.3
+        - name: grok-4.20
+        - name: grok-4.1-fast

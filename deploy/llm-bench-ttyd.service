@@ -1,0 +1,15 @@
+[Unit]
+Description=llm-bench TUI web interface via ttyd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jonathan
+EnvironmentFile=/opt/llm-bench/.env
+ExecStart=/usr/bin/ttyd -R -p 7682 /home/jonathan/go/bin/llmprobe watch --tui --interval 1h -c /opt/llm-bench/probes.yml
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

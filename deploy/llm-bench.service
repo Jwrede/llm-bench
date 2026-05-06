@@ -1,0 +1,16 @@
+[Unit]
+Description=llm-bench continuous LLM API probing
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jonathan
+EnvironmentFile=/opt/llm-bench/.env
+ExecStart=/home/jonathan/go/bin/llmprobe watch -f json --interval 1h -c /opt/llm-bench/probes.yml
+StandardOutput=append:/opt/llm-bench/data/results.jsonl
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

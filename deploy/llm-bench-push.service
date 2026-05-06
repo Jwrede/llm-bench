@@ -1,0 +1,9 @@
+[Unit]
+Description=Push llm-bench data to git
+
+[Service]
+Type=oneshot
+User=jonathan
+Environment=LLM_BENCH_DATA_DIR=/opt/llm-bench/data
+Environment=LLM_BENCH_DATA_REPO=/opt/llm-bench/data-repo
+ExecStart=/opt/llm-bench/push-data.sh

@@ -1,0 +1,4 @@
+/discover
+*.exe
+.env
+data/

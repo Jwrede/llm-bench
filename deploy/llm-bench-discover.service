@@ -1,0 +1,9 @@
+[Unit]
+Description=Discover new LLM models via OpenRouter
+
+[Service]
+Type=oneshot
+User=jonathan
+ExecStart=/opt/llm-bench/discover -o /opt/llm-bench/probes.yml
+ExecStartPost=/usr/bin/systemctl restart llm-bench
+ExecStartPost=/usr/bin/systemctl restart llm-bench-ttyd
