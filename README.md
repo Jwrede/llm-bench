@@ -1,18 +1,18 @@
 # llm-bench
 
-> Continuous, open LLM API performance benchmark. Live TUI at [bench.jonathanwrede.de](https://bench.jonathanwrede.de).
+> Continuous, open LLM API performance benchmark. Live at [bench.jonathanwrede.de](https://bench.jonathanwrede.de).
 
 This repo contains the infrastructure that runs a 24/7 benchmark of major LLM
 API endpoints and publishes the raw data as an open dataset.
 
 Every hour, [llmprobe](https://github.com/Jwrede/llmprobe) sends a minimal
 request to each tracked model and records time to first token (TTFT), total
-latency, and generation throughput. The results are committed to the
+latency, and generation throughput. Results are committed to the
 [data repository](https://github.com/Jwrede/llm-bench-data) as JSONL.
 
-A live terminal dashboard is served at
-[bench.jonathanwrede.de](https://bench.jonathanwrede.de) via
-[ttyd](https://github.com/nicm/ttyd).
+A static dashboard at [bench.jonathanwrede.de](https://bench.jonathanwrede.de)
+shows time series charts for all three metrics, regenerated after each probe
+cycle.
 
 ## What it measures
 
@@ -22,38 +22,34 @@ A live terminal dashboard is served at
 | Latency | Total request duration (ms) |
 | Tok/s | Tokens generated per second after first token |
 
-## Tracked providers
+## Model selection
 
-Models are automatically discovered via the
-[OpenRouter API](https://openrouter.ai/api/v1/models) and probed against
-their native endpoints (not OpenRouter) for accurate latency measurement.
+Models are selected automatically based on OpenRouter weekly popularity
+rankings. The `discover` command fetches the most actively used models and
+picks the top 3 per provider. The model list refreshes daily.
 
-| Provider | Endpoint |
-|----------|----------|
-| OpenAI | api.openai.com |
-| Anthropic | api.anthropic.com |
-| Google | generativelanguage.googleapis.com |
-| DeepSeek | api.deepseek.com |
-| xAI | api.x.ai |
+Tracked providers: OpenAI, Anthropic, Google, DeepSeek, xAI.
 
-The model list updates daily. New frontier models are added automatically;
-deprecated models are removed.
+All probes are routed through the OpenRouter API using a single OpenAI-compatible
+endpoint, so the model identifiers include the provider prefix
+(e.g. `anthropic/claude-sonnet-4.6`).
 
 ## Architecture
 
 ```
 systemd timer (hourly)
-  -> llmprobe watch -f json (probes all models, outputs JSONL)
-  -> push-data.sh (commits results to data repo)
+  -> llmprobe probe (probes all models via OpenRouter, outputs JSON)
+  -> append to results.jsonl
+  -> generate (rebuild static site from accumulated data)
 
-systemd timer (daily)
-  -> discover (queries OpenRouter, regenerates probes.yml)
-  -> restarts probe services with updated model list
+systemd timer (every :30)
+  -> push-data.sh (commit results to data repo, clear local buffer)
 
-ttyd (persistent)
-  -> llmprobe watch --tui (live terminal dashboard)
-  -> nginx reverse proxy at bench.jonathanwrede.de
+systemd timer (daily at 00:30 UTC)
+  -> discover --openrouter (query OpenRouter rankings, regenerate probes.yml)
 ```
+
+The static site is served by Caddy with automatic HTTPS.
 
 ## Dataset
 
@@ -65,53 +61,62 @@ Each line is a JSON object:
 ```json
 {
   "provider": "openai",
-  "model": "gpt-4o",
+  "model": "anthropic/claude-sonnet-4.6",
+  "status": "healthy",
   "ttft_ms": 312,
   "latency_ms": 2100,
   "tokens_per_sec": 68.4,
   "token_count": 20,
-  "status": "ok",
   "timestamp": "2026-05-06T14:00:00Z"
 }
 ```
 
 Files are organized by month and day: `data/2026-05/2026-05-06.jsonl`.
 
-## Discovery tool
+## Commands
 
-The `discover` command fetches the OpenRouter model catalog and generates a
-`probes.yml` configuration targeting frontier models from each provider.
+### discover
+
+Fetches OpenRouter weekly popularity rankings and generates a `probes.yml`
+targeting the most used frontier models.
 
 ```bash
 go build -o discover ./cmd/discover/
-./discover -o probes.yml -max 3 -min-context 32768
+./discover --openrouter -max 3 -o probes.yml
 ```
 
-Filtering criteria:
-- Top 3 most recent models per provider
-- Minimum 32k context window
-- Excludes free tiers, previews, and beta models
-- Only models with non-zero completion pricing
+Filtering: excludes free tiers, previews, betas, image/audio models, and
+open-weight models (gemma).
+
+### generate
+
+Reads JSONL probe data and produces a static HTML dashboard with Chart.js
+time series for TTFT, latency, and throughput.
+
+```bash
+go build -o generate ./cmd/generate/
+./generate -data /opt/llm-bench/data -out /opt/llm-bench/site
+```
 
 ## Deployment
 
-Runs on a VPS with systemd. See `deploy/` for service files and nginx config.
+Runs on a VPS with systemd timers. Caddy serves the static site.
 
 ```bash
-# initial setup
-./scripts/setup.sh git@github.com:Jwrede/llm-bench-data.git
-
 # manual probe run
-llmprobe probe -f json -c /opt/llm-bench/probes.yml
+llmprobe probe -f json -c /opt/llm-bench/probes.yml | jq -c '.[]' >> data/results.jsonl
 
 # manual discovery
-/opt/llm-bench/discover -o /opt/llm-bench/probes.yml
+/opt/llm-bench/discover --openrouter -max 3 -o /opt/llm-bench/probes.yml
+
+# regenerate site
+/opt/llm-bench/generate -data /opt/llm-bench/data -out /opt/llm-bench/site
 ```
 
 ## Cost
 
-Probing 13 models hourly with "Hi" (1-2 input tokens, 20 output tokens max)
-costs approximately $0.50-$1.50/month across all providers.
+Probing 15 models hourly with "Hi" (1-2 input tokens, 20 output tokens max)
+costs approximately $0.50-$1.50/month via OpenRouter.
 
 ## License
 
