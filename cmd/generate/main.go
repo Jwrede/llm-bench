@@ -68,11 +68,14 @@ var colors = []string{
 }
 
 func main() {
-	dataDir := flag.String("data", "/opt/llm-bench/data", "path to data directory")
+	dataDirs := flag.String("data", "/opt/llm-bench/data", "comma-separated data directories")
 	outDir := flag.String("out", "/opt/llm-bench/site", "output directory for generated site")
 	flag.Parse()
 
-	records := loadRecords(*dataDir)
+	var records []Record
+	for _, dir := range strings.Split(*dataDirs, ",") {
+		records = append(records, loadRecords(strings.TrimSpace(dir))...)
+	}
 	data := aggregate(records)
 
 	if err := os.MkdirAll(*outDir, 0755); err != nil {
